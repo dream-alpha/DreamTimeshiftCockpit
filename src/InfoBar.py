@@ -62,11 +62,14 @@ class InfoBar(InfoBarOrg, Recording):
             screen=self,
             eventmap={
                 iPlayableService.evStart: self.__serviceStarted,
+                iPlayableService.evTunedIn: self.__serviceTuned,
+                iPlayableService.evTuneFailed: self.__tuneFailed,
             }
         )
+        self.wait_for_tuner = False
         self.wait_for_time_timer = eTimer()
         self.wait_for_time_timer_conn = self.wait_for_time_timer.timeout.connect(
-            self.__serviceStarted)
+            self.startWhenTimeIsSet)
         self.max_timeshifts = 0
         self.setFixedServices()
 
@@ -81,12 +84,37 @@ class InfoBar(InfoBarOrg, Recording):
         logger.debug("max_timeshifts: %s", self.max_timeshifts)
 
     def __serviceStarted(self):
+        # evStart comes when enigma2 begins to tune the service, not when it is tuned: a recording that is started now needs a tuner that is not
+        # locked yet, and enigma2 crashed with a tuner error. A DVB service is waited for until it is tuned (evTunedIn, see __serviceTuned);
+        # what has no tuner to wait for (a stream, a recording that is played) is started at once.
         logger.info("...")
+        self.wait_for_time_timer.stop()
+        self.wait_for_tuner = False
         if config.plugins.timeshiftcockpit.permanent.value:
-            if int(time()):
-                DelayTimer(100, self.startTimeshifts)
+            service_ref = self.session.nav.getCurrentlyPlayingServiceReference()
+            if service_ref and service_ref.type == eServiceReference.idDVB and not service_ref.getPath():
+                logger.debug("waiting until %s is tuned", service_ref.toString())
+                self.wait_for_tuner = True
             else:
-                self.wait_for_time_timer.start(1000, True)
+                self.startWhenTimeIsSet()
+
+    def __serviceTuned(self):
+        logger.info("wait_for_tuner: %s", self.wait_for_tuner)
+        if self.wait_for_tuner:
+            self.wait_for_tuner = False
+            self.startWhenTimeIsSet()
+
+    def __tuneFailed(self):
+        # nothing to record: the next service that is started tunes again
+        logger.info("wait_for_tuner: %s", self.wait_for_tuner)
+        self.wait_for_tuner = False
+        self.wait_for_time_timer.stop()
+
+    def startWhenTimeIsSet(self):
+        if int(time()):
+            DelayTimer(100, self.startTimeshifts)
+        else:
+            self.wait_for_time_timer.start(1000, True)
 
     def startTimeshift(self):
         # pause
